@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "joe.cellular",
+  "name": "Cellular",
+  "version": "1.0.0",
+  "author": "joe-bader",
+  "license": "MIT",
+  "description": "Cellular modem status, signal, and mobile data control in the Omarchy bar.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Cellular",
+    "description": "Signal strength and carrier for the built-in modem, with mobile data on/off.",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 15
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 5,
+        "max": 300,
+        "step": 5,
+        "defaultValue": 15
+      }
+    ]
+  }
+}

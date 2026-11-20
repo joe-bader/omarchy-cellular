@@ -1,0 +1,89 @@
+#!/bin/bash
+# Prints the cellular modem's state as key<TAB>value lines for the cellular
+# bar widget. Read-only: queries ModemManager (mmcli) and NetworkManager
+# (nmcli) and never changes anything. Missing values print as empty strings.
+
+emit() { printf '%s\t%s\n' "$1" "${2//[$'\t\n']/ }"; }
+
+# mmcli -K prints "key : value"; "--" means unset.
+kv() {
+  awk -v want="$2" -F' : ' '
+    { key=$1; sub(/[ \t]+$/, "", key) }
+    key == want { val=$2; sub(/^[ \t]+/, "", val); sub(/[ \t]+$/, "", val); if (val == "--") val=""; print val; exit }
+  ' <<<"$1"
+}
+
+radio=$(timeout 5 nmcli -t radio wwan 2>/dev/null)
+emit radio "${radio:-unknown}"
+
+if ! systemctl is-active --quiet ModemManager.service; then
+  emit present no
+  emit reason no-modemmanager
+  exit 0
+fi
+
+list=$(timeout 5 mmcli -L -K 2>/dev/null)
+modem_path=$(kv "$list" 'modem-list.value[1]')
+if [[ -z $modem_path ]]; then
+  emit present no
+  exit 0
+fi
+emit present yes
+
+m=$(timeout 5 mmcli -m "$modem_path" -K 2>/dev/null)
+emit model "$(kv "$m" modem.generic.model)"
+emit state "$(kv "$m" modem.generic.state)"
+emit failed_reason "$(kv "$m" modem.generic.state-failed-reason)"
+emit unlock_required "$(kv "$m" modem.generic.unlock-required)"
+emit signal "$(kv "$m" modem.generic.signal-quality.value)"
+emit registration "$(kv "$m" modem.3gpp.registration-state)"
+emit operator "$(kv "$m" modem.3gpp.operator-name)"
+
+tech=""
+for i in 1 2 3 4; do
+  t=$(kv "$m" "modem.generic.access-technologies.value[$i]")
+  [[ -n $t ]] && tech+="${tech:+,}$t"
+done
+emit tech "$tech"
+
+sim_path=$(kv "$m" modem.generic.sim)
+if [[ -n $sim_path ]]; then
+  s=$(timeout 5 mmcli -i "$sim_path" -K 2>/dev/null)
+  emit sim yes
+  emit sim_operator "$(kv "$s" sim.properties.operator-name)"
+else
+  emit sim no
+fi
+
+# NetworkManager's view: the gsm device, its active connection, and traffic.
+device="" dev_state="" connection=""
+while IFS=: read -r dev type state conn; do
+  if [[ $type == gsm ]]; then device=$dev dev_state=$state connection=$conn; break; fi
+done < <(timeout 5 nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device 2>/dev/null)
+emit device "$device"
+emit device_state "$dev_state"
+
+# The saved profile to bring up: the active one, else the first gsm profile.
+profile=$connection
+if [[ -z $profile ]]; then
+  while IFS=: read -r name type; do
+    if [[ $type == gsm ]]; then profile=$name; break; fi
+  done < <(timeout 5 nmcli -t -f NAME,TYPE connection show 2>/dev/null)
+fi
+emit profile "$profile"
+
+if [[ -n $profile ]]; then
+  apn=$(timeout 5 nmcli -g gsm.apn connection show "$profile" 2>/dev/null)
+  auto=$(timeout 5 nmcli -g gsm.auto-config connection show "$profile" 2>/dev/null)
+  [[ -z $apn && $auto == yes ]] && apn=auto
+  emit apn "$apn"
+fi
+
+if [[ -n $device && $dev_state == connected ]]; then
+  emit ip "$(timeout 5 nmcli -g IP4.ADDRESS device show "$device" 2>/dev/null | head -1)"
+  iface=$(timeout 5 nmcli -g GENERAL.IP-IFACE device show "$device" 2>/dev/null)
+  if [[ -n $iface && -r /sys/class/net/$iface/statistics/rx_bytes ]]; then
+    emit rx_bytes "$(</sys/class/net/$iface/statistics/rx_bytes)"
+    emit tx_bytes "$(</sys/class/net/$iface/statistics/tx_bytes)"
+  fi
+fi
